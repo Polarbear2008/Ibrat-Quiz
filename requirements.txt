@@ -1,0 +1,13 @@
+aiogram==3.11.0
+python-dotenv==1.0.1
+aiohttp==3.9.1
+python-telegram-bot==20.8
+requests==2.31.0
+multidict==6.6.3
+propcache==0.3.2
+pydantic==2.11.7
+pydantic_core==2.33.2
+python-dotenv==1.0.0
+typing-inspection==0.4.1
+typing_extensions==4.14.0
+yarl==1.20.1
