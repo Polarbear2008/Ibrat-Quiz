@@ -1,60 +1,11 @@
 [
   {
-    "full_name": "sd",
+    "full_name": "/admin",
     "phone": "+998974196464",
     "user_id": 5747916482,
     "english_level": "Advanced (C1-C2)",
-    "age": 13,
-    "registration_date": "2025-08-22 02:46:15",
-    "telegram_id": 5747916482
-  },
-  {
-    "full_name": "s",
-    "phone": "+998974196464",
-    "user_id": 5747916482,
-    "english_level": "Advanced (C1-C2)",
-    "age": 2,
-    "team_name": "as",
-    "team_members": [
-      {
-        "name": "John Doe",
-        "phone": "+1234567890"
-      },
-      {
-        "name": "Jane Smith",
-        "phone": "+1987654321"
-      }
-    ],
-    "registration_date": "2025-08-22 02:46:52",
-    "telegram_id": 5747916482
-  },
-  {
-    "full_name": "s",
-    "phone": "+998774187565",
-    "user_id": 7590644967,
-    "english_level": "Advanced (C1-C2)",
-    "age": 4,
-    "team_name": "a",
-    "team_members": [
-      {
-        "name": "John Doe",
-        "phone": "+1234567890"
-      },
-      {
-        "name": "Jane Smith",
-        "phone": "+1987654321"
-      }
-    ],
-    "registration_date": "2025-08-22 02:49:42",
-    "telegram_id": 7590644967
-  },
-  {
-    "full_name": "w",
-    "phone": "+998974196464",
-    "user_id": 5747916482,
-    "english_level": "Intermediate (B1-B2)",
-    "age": 2,
-    "registration_date": "2025-08-22 03:14:10",
+    "age": 12,
+    "registration_date": "2025-08-23 00:37:33",
     "telegram_id": 5747916482
   }
 ]
