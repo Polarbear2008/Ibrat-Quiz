@@ -22,9 +22,11 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', "7605069387:AAF4h9zO99LrqWg8JCVYmvYIrpFo1FN8Y
 
 # Load channel username from environment
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@quizibratparticipants')
+CHANNEL_ID = os.getenv('CHANNEL_ID', '5747916482')
 
-# Admin user IDs
-ADMIN_IDS = [5747916482]  # Replace with your admin IDs
+# Admin user IDs from environment
+ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '1769729434,5747916482')
+ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(',') if id.strip()]
 
 # Global participants list
 participants = []
@@ -37,43 +39,140 @@ def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS
 
+def is_registered(user_id):
+    """Check if user is registered"""
+    return any(p.get('telegram_id') == user_id for p in participants)
+
+def get_participant_info(user_id):
+    """Get participant info by user ID"""
+    for p in participants:
+        if p.get('telegram_id') == user_id:
+            return p
+    return None
+
 async def notify_channel(participant_data):
     """Send notification to channel about new registration"""
     if not CHANNEL_USERNAME:
+        logger.warning("CHANNEL_USERNAME not set, skipping channel notification")
         return
         
     try:
-        # Format the notification message
+        # Format the notification message using HTML
+        def escape_html(text):
+            """Escape HTML special characters"""
+            if not text or text == 'N/A':
+                return text
+            return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        
         message = [
-            "🎉 *New Registration!* 🎉",
-            f"👤 *Name:* {participant_data.get('full_name', 'N/A')}",
-            f"📱 *Phone:* {participant_data.get('phone', 'N/A')}",
-            f"📊 *English Level:* {participant_data.get('english_level', 'N/A')}",
-            f"🎂 *Age:* {participant_data.get('age', 'N/A')}",
+            "🎉 <b>New Registration!</b> 🎉",
+            f"👤 <b>Name:</b> {escape_html(participant_data.get('full_name', 'N/A'))}",
+            f"👤 <b>Username:</b> @{escape_html(participant_data.get('username', 'N/A'))}",
+            f"🆔 <b>Telegram ID:</b> {participant_data.get('telegram_id', 'N/A')}",
+            f"📱 <b>Phone:</b> {escape_html(participant_data.get('phone', 'N/A'))}",
+            f"📊 <b>English Level:</b> {escape_html(participant_data.get('english_level', 'N/A'))}",
+            f"🎂 <b>Age:</b> {participant_data.get('age', 'N/A')}",
         ]
         
         if 'team_name' in participant_data:
-            message.append(f"🏆 *Team:* {participant_data['team_name']}")
+            message.append(f"🏆 <b>Team:</b> {escape_html(participant_data['team_name'])}")
             
             # Add team members if any
             team_members = participant_data.get('team_members', [])
             if team_members:
-                message.append("\n👥 *Team Members:*")
+                message.append("\n👥 <b>Team Members:</b>")
                 for i, member in enumerate(team_members, 1):
-                    member_info = f"{i}. {member.get('name', 'N/A')}"
+                    member_info = f"{i}. {escape_html(member.get('name', 'N/A'))}"
                     if 'phone' in member:
-                        member_info += f" - {member['phone']}"
+                        member_info += f" - {escape_html(member['phone'])}"
                     message.append(member_info)
         
-        # Send the message to the channel
-        await bot.send_message(
-            chat_id=CHANNEL_USERNAME,
-            text="\n".join(message),
-            parse_mode='Markdown'
-        )
+        # Try sending to channel username first
+        logger.info(f"Attempting to send to channel: {CHANNEL_USERNAME}")
+        try:
+            await bot.send_message(
+                chat_id=CHANNEL_USERNAME,
+                text="\n".join(message),
+                parse_mode='HTML'
+            )
+            logger.info("Successfully sent to channel via username")
+        except Exception as username_error:
+            logger.error(f"Failed to send via username {CHANNEL_USERNAME}: {username_error}")
+            
+            # Try with CHANNEL_ID if available
+            if CHANNEL_ID:
+                try:
+                    await bot.send_message(
+                        chat_id=int(CHANNEL_ID),
+                        text="\n".join(message),
+                        parse_mode='HTML'
+                    )
+                    logger.info("Successfully sent to channel via ID")
+                except Exception as id_error:
+                    logger.error(f"Failed to send via ID {CHANNEL_ID}: {id_error}")
+                    raise id_error
+            else:
+                raise username_error
+                
     except Exception as e:
         logger.error(f"Error sending to channel: {e}")
         print(f"Error sending to channel: {e}")
+        # Send error notification to admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=f"⚠️ Failed to send registration notification to channel: {e}"
+                )
+            except:
+                pass
+
+async def notify_admin(participant_data):
+    """Send notification to admin about new registration"""
+    try:
+        # Escape function for admin notifications
+        def escape_html(text):
+            """Escape HTML special characters"""
+            if not text or text == 'N/A':
+                return text
+            return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        
+        # Format the notification message for admin
+        message = [
+            "🎉 <b>New Registration!</b> 🎉",
+            f"👤 <b>Name:</b> {escape_html(participant_data.get('full_name', 'N/A'))}",
+            f"👤 <b>Username:</b> @{escape_html(participant_data.get('username', 'N/A'))}",
+            f"🆔 <b>Telegram ID:</b> {participant_data.get('telegram_id', 'N/A')}",
+            f"📱 <b>Phone:</b> {escape_html(participant_data.get('phone', 'N/A'))}",
+            f"📊 <b>English Level:</b> {escape_html(participant_data.get('english_level', 'N/A'))}",
+            f"🎂 <b>Age:</b> {participant_data.get('age', 'N/A')}",
+            f"📅 <b>Registered:</b> {escape_html(participant_data.get('registration_date', 'N/A'))}",
+        ]
+        
+        if 'team_name' in participant_data:
+            message.append(f"🏆 <b>Team:</b> {escape_html(participant_data['team_name'])}")
+            
+            # Add team members if any
+            team_members = participant_data.get('team_members', [])
+            if team_members:
+                message.append("\n👥 <b>Team Members:</b>")
+                for i, member in enumerate(team_members, 1):
+                    member_info = f"{i}. {escape_html(member['name'])} - {escape_html(member.get('phone', 'N/A'))}"
+                    message.append(member_info)
+        
+        # Send the message to all admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text="\n".join(message),
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.error(f"Error sending to admin {admin_id}: {e}")
+                
+    except Exception as e:
+        logger.error(f"Error in notify_admin: {e}")
 
 # States
 class Form(StatesGroup):
@@ -240,9 +339,12 @@ async def complete_registration(message: types.Message, state: FSMContext):
     # Get all user data
     user_data = await state.get_data()
     
-    # Add registration timestamp
+    # Add registration timestamp and user info
     user_data['registration_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     user_data['telegram_id'] = message.from_user.id
+    user_data['username'] = message.from_user.username or "No username"
+    user_data['first_name'] = message.from_user.first_name or ""
+    user_data['last_name'] = message.from_user.last_name or ""
     
     # Store the participant
     participants.append(user_data)
@@ -252,6 +354,9 @@ async def complete_registration(message: types.Message, state: FSMContext):
     
     # Send notification to channel
     await notify_channel(user_data)
+    
+    # Send notification to admin
+    await notify_admin(user_data)
     
     # Create response message
     response = [
@@ -323,6 +428,8 @@ async def view_all_participants(callback: types.CallbackQuery):
             f"👤 Participant #{i}",
             f"📅 Registered: {participant.get('registration_date', 'N/A')}",
             f"👤 Name: {participant.get('full_name', 'N/A')}",
+            f"👤 Username: @{participant.get('username', 'No username')}",
+            f"🆔 Telegram ID: {participant.get('telegram_id', 'N/A')}",
             f"📱 Phone: {participant.get('phone', 'N/A')}",
             f"📊 English: {participant.get('english_level', 'N/A')}",
             f"🎂 Age: {participant.get('age', 'N/A')}",
@@ -446,6 +553,28 @@ async def reload_data(callback: types.CallbackQuery):
     await callback.message.answer(f"🔄 Data reloaded! Found {len(participants)} participants.")
     await callback.answer()
 
+# Test channel connection command
+@dp.message(Command("test_channel"))
+async def test_channel(message: types.Message):
+    """Test channel connection (admin only)"""
+    if not is_admin(message.from_user.id):
+        await message.answer("🚫 Access denied.")
+        return
+    
+    test_data = {
+        'full_name': 'Test User',
+        'username': 'testuser',
+        'telegram_id': 12345,
+        'phone': '+1234567890',
+        'english_level': 'Intermediate',
+        'age': 25,
+        'registration_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    await message.answer("🧪 Testing channel notification...")
+    await notify_channel(test_data)
+    await message.answer("✅ Test notification sent! Check the channel and logs.")
+
 def save_participants():
     """Save participants to a JSON file"""
     try:
@@ -469,21 +598,66 @@ def load_participants():
         logger.error(f"Error loading participants: {e}")
         participants = []
 
-# Error handler for unhandled messages
+# Message forwarding handler
 @dp.message()
 async def handle_other_messages(message: types.Message):
     """Handle all other messages"""
-    if message.text and message.text.startswith('/'):
-        await message.answer(
-            "❓ I don't understand that command.\n\n"
-            "Available commands:\n"
-            "• /start - Begin registration\n"
-            "• /admin - Admin panel (admins only)"
-        )
+    user_id = message.from_user.id
+    
+    # Check if user is registered
+    if is_registered(user_id):
+        participant = get_participant_info(user_id)
+        if participant:
+            try:
+                # Format forwarded message
+                username = participant.get('username', 'No username')
+                full_name = participant.get('full_name', 'Unknown')
+                
+                forward_text = f"📩 *Message from registered user:*\n"
+                forward_text += f"👤 *Name:* {full_name}\n"
+                forward_text += f"👤 *Username:* @{username}\n"
+                forward_text += f"🆔 *ID:* {user_id}\n"
+                forward_text += f"💬 *Message:* {message.text or '[Media/File]'}"
+                
+                # Forward to channel/group
+                if CHANNEL_USERNAME:
+                    await bot.send_message(
+                        chat_id=CHANNEL_USERNAME,
+                        text=forward_text,
+                        parse_mode='Markdown'
+                    )
+                
+                # Also forward to admins
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await bot.send_message(
+                            chat_id=admin_id,
+                            text=forward_text,
+                            parse_mode='Markdown'
+                        )
+                    except Exception as e:
+                        logger.error(f"Error forwarding to admin {admin_id}: {e}")
+                
+                # Confirm to user
+                await message.answer("✅ Your message has been forwarded to the group!")
+                
+            except Exception as e:
+                logger.error(f"Error forwarding message: {e}")
+                await message.answer("❌ Error forwarding your message. Please try again.")
     else:
-        await message.answer(
-            "👋 Hi! Send /start to begin registration or /admin for admin panel."
-        )
+        # Handle unregistered users
+        if message.text and message.text.startswith('/'):
+            await message.answer(
+                "❓ I don't understand that command.\n\n"
+                "Available commands:\n"
+                "• /start - Begin registration\n"
+                "• /admin - Admin panel (admins only)"
+            )
+        else:
+            await message.answer(
+                "👋 Hi! You need to register first to send messages to the group.\n"
+                "Send /start to begin registration."
+            )
 
 # Main function
 async def main():
