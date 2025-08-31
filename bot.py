@@ -12,6 +12,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
+from io import StringIO
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,8 +41,32 @@ if not ADMIN_IDS_STR:
     exit()
 ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(',') if id.strip()]
 
+# Participant data file
+PARTICIPANTS_FILE = 'participants.json'
+
 # Global participants list
 participants = []
+
+def save_participants():
+    """Saves the participants list to a JSON file."""
+    try:
+        with open(PARTICIPANTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(participants, f, indent=4, ensure_ascii=False)
+        logger.info("Participants data saved successfully.")
+    except Exception as e:
+        logger.error(f"Error saving participants data: {e}")
+
+def load_participants():
+    """Loads participants from a JSON file."""
+    global participants
+    try:
+        if os.path.exists(PARTICIPANTS_FILE):
+            with open(PARTICIPANTS_FILE, 'r', encoding='utf-8') as f:
+                participants = json.load(f)
+            logger.info("Participants data loaded successfully.")
+    except Exception as e:
+        logger.error(f"Error loading participants data: {e}")
+        participants = []
 
 # Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN)
@@ -346,7 +371,6 @@ async def process_age(message: types.Message, state: FSMContext):
     try:
         age = int(message.text)
         await state.update_data(age=age)
-        
         await message.answer(
             "Please select your region:",
             reply_markup=region_keyboard
@@ -374,301 +398,168 @@ async def process_region(message: types.Message, state: FSMContext):
 @dp.message(RegistrationForm.registration_type)
 async def process_registration_type(message: types.Message, state: FSMContext):
     """Process registration type"""
-    if message.text.lower() in ["individual"]:
-        # Complete registration without team
-        await complete_registration(message, state)
-    elif message.text.lower() in ["team"]:
+    registration_type = message.text
+    await state.update_data(registration_type=registration_type)
+
+    if registration_type.lower() == 'team':
         await message.answer(
-            "🏆 Please enter your team name:",
+            "What is your team's name?",
             reply_markup=ReplyKeyboardRemove()
         )
         await state.set_state(RegistrationForm.team_name)
-    else:
-        await message.answer("Please select a valid registration type from the buttons.")
+    else: # Individual
+        participant_data = await state.get_data()
+        await finalize_registration(message, participant_data)
+        await state.clear()
 
 # Handle team name
 @dp.message(RegistrationForm.team_name)
 async def process_team_name(message: types.Message, state: FSMContext):
-    """Process team name and ask for team members"""
+    """Process team name and ask for team members."""
     await state.update_data(team_name=message.text)
-    
     await message.answer(
-        "👥 Please enter your team members' details (one per line):\n"
-        "Format: Full Name, Phone Number\n\n"
-        "Example:\n"
-        "John Doe, +1234567890\n"
-        "Jane Smith, +1987654321"
+        "Please list your team members' full names, separated by commas.",
+        reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(RegistrationForm.team_members)
 
 # Handle team members
 @dp.message(RegistrationForm.team_members)
 async def process_team_members(message: types.Message, state: FSMContext):
-    """Process team members"""
-    try:
-        # Parse team members
-        lines = [line.strip() for line in message.text.split('\n') if line.strip()]
-        members = []
-        
-        for line in lines:
-            parts = [p.strip() for p in line.split(',', 1)]
-            if len(parts) == 2:
-                name, phone = parts
-                members.append({'name': name, 'phone': phone})
-        
-        if not members:
-            raise ValueError("No valid team members provided")
-            
-        await state.update_data(team_members=members)
-        await complete_registration(message, state)
-        
-    except Exception as e:
-        logger.error(f"Error processing team members: {e}")
-        await message.answer(
-            "❌ Invalid format. Please try again. Format should be:\n"
-            "Full Name, Phone Number\n"
-            "Example:\n"
-            "John Doe, +1234567890"
-        )
-
-async def complete_registration(message: types.Message, state: FSMContext):
-    """Complete the registration process"""
-    # Get all user data
-    user_data = await state.get_data()
+    """Process team members and finalize registration."""
+    team_members = [{'name': name.strip()} for name in message.text.split(',')]
+    await state.update_data(team_members=team_members)
     
-    # Add registration timestamp and user info
-    user_data['registration_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    user_data['telegram_id'] = message.from_user.id
-    user_data['username'] = message.from_user.username or "No username"
-    user_data['first_name'] = message.from_user.first_name or ""
-    user_data['last_name'] = message.from_user.last_name or ""
-    
-    # Store the participant
-    participants.append(user_data)
-    
-    # Save to file (in a real app, use a database)
-    save_participants()
-    
-    # Send notification to channel
-    await notify_channel(user_data)
-    
-    # Send notification to admin
-    await notify_admin(user_data)
-    
-    # Create response message
-    response = [
-        "✅ Registration Complete! ✅",
-        "\n📋 Your Details:",
-        f"👤 Name: {user_data.get('full_name', 'N/A')}",
-        f"📱 Phone: {user_data['phone']}",
-        f"📊 English Level: {user_data['english_level']}",
-        f"🎂 Age: {user_data['age']}",
-        f"📍 Region: {user_data['region']}",
-    ]
-    
-    if 'team_name' in user_data:
-        response.append(f"\n🏆 Team: {user_data['team_name']}")
-        
-        # Add team members if any
-        team_members = user_data.get('team_members', [])
-        if team_members:
-            response.append("\n👥 Team Members:")
-            for i, member in enumerate(team_members, 1):
-                response.append(f"{i}. {member['name']} - {member['phone']}")
-    
-    # Send confirmation
-    await message.answer(
-        "\n".join(response),
-        reply_markup=main_menu_keyboard
-    )
-    
-    # Clear the state
+    participant_data = await state.get_data()
+    await finalize_registration(message, participant_data)
     await state.clear()
 
-def clear_all_data():
-    """Clears the participants list and the storage file."""
-    global participants
-    participants = []
-    save_participants()
-    logger.info("All participant data has been cleared.")
-
-@dp.message(Command("clear"))
-async def clear_data_command(message: types.Message):
-    """Admin command to clear all registration data."""
-    if not is_admin(message.from_user.id):
-        await message.answer("🚫 Access denied.")
-        return
-
-    # Add confirmation step
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⚠️ Yes, clear all data", callback_data="confirm_clear")],
-            [InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_clear")]
-        ]
-    )
-    await message.answer(
-        "❓ Are you sure you want to delete all registration data? This action cannot be undone.",
-        reply_markup=keyboard
-    )
-
-@dp.callback_query(F.data == "confirm_clear")
-async def confirm_clear_data(callback: types.CallbackQuery):
-    """Handles confirmation of data clearing."""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    
-    clear_all_data()
-    await callback.message.edit_text("✅ All registration data has been cleared.")
-    await callback.answer()
-
-@dp.callback_query(F.data == "cancel_clear")
-async def cancel_clear_data(callback: types.CallbackQuery):
-    """Handles cancellation of data clearing."""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-
-    await callback.message.edit_text("Action cancelled.")
-    await callback.answer()
-
-# Admin commands
+# Admin panel
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
-    """Show admin panel"""
+    """Admin panel with advanced controls."""
     if not is_admin(message.from_user.id):
-        await message.answer("🚫 Access denied.")
+        await message.answer("You are not authorized to use this command.")
         return
+
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 View Participants", callback_data="view_participants")],
+        [InlineKeyboardButton(text="📈 Get Statistics", callback_data="get_stats")],
+        [InlineKeyboardButton(text="🔍 Filter by Region", callback_data="filter_by_region")],
+        [InlineKeyboardButton(text="📄 Export Data", callback_data="export_data")],
+        [InlineKeyboardButton(text="🗑️ Clear All Data", callback_data="confirm_clear_all")]
+    ])
     
-    keyboard = [
-        [
-            types.InlineKeyboardButton(text="👥 View All Participants", callback_data="view_all"),
-            types.InlineKeyboardButton(text="📊 Statistics", callback_data="stats")
-        ],
-        [
-            types.InlineKeyboardButton(text="📋 Export Data", callback_data="export"),
-            types.InlineKeyboardButton(text="🔄 Reload Data", callback_data="reload")
-        ],
-        [
-            types.InlineKeyboardButton(text="📍 Filter by Region", callback_data="show_region_filter")
-        ]
-    ]
-    reply_markup = types.InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer("Welcome to the Admin Panel!", reply_markup=admin_keyboard)
+
+# Callback for viewing participants
+@dp.callback_query(F.data == "view_participants")
+async def view_participants_callback(callback_query: types.CallbackQuery):
+    """Displays the list of registered participants."""
+    if not participants:
+        await callback_query.answer("No participants registered yet.")
+        return
+
+    response = "<b>Registered Participants:</b>\n\n"
+    for p in participants:
+        response += (
+            f"<b>Name:</b> {escape_html(p.get('full_name', 'N/A'))}\n"
+            f"<b>Username:</b> @{escape_html(p.get('username', 'N/A'))}\n"
+            f"<b>Region:</b> {escape_html(p.get('region', 'N/A'))}\n"
+            f"<b>Phone:</b> {escape_html(p.get('phone', 'N/A'))}\n"
+            f"<b>Team:</b> {escape_html(p.get('team_name', 'Individual'))}\n"
+            f"--------------------\n"
+        )
     
-    await message.answer(
-        "👨‍💼 Admin Panel",
-        reply_markup=reply_markup
+    await callback_query.message.answer(response, parse_mode='HTML')
+    await callback_query.answer()
+
+# Callback for getting statistics
+@dp.callback_query(F.data == "get_stats")
+async def get_stats_callback(callback_query: types.CallbackQuery):
+    """Provides statistics about registrations."""
+    total_participants = len(participants)
+    
+    # Region stats
+    region_counts = {}
+    for p in participants:
+        region = p.get('region', 'Unknown')
+        region_counts[region] = region_counts.get(region, 0) + 1
+    
+    region_stats = "\n".join([f"- {region}: {count}" for region, count in region_counts.items()])
+    
+    # Team vs Individual
+    team_count = sum(1 for p in participants if p.get('registration_type') == 'Team')
+    individual_count = total_participants - team_count
+    
+    stats_message = (
+        f"<b>Registration Statistics:</b>\n\n"
+        f"- <b>Total Participants:</b> {total_participants}\n"
+        f"- <b>Individuals:</b> {individual_count}\n"
+        f"- <b>Teams:</b> {team_count}\n\n"
+        f"<b>Region Breakdown:</b>\n{region_stats}"
     )
+    
+    await callback_query.message.answer(stats_message, parse_mode='HTML')
+    await callback_query.answer()
 
-@dp.callback_query(F.data == "view_all")
-async def view_all_participants(callback: types.CallbackQuery):
-    """Show all participants"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
+# Callback to initiate region filtering
+@dp.callback_query(F.data == "filter_by_region")
+async def filter_by_region_callback(callback_query: types.CallbackQuery):
+    """Shows buttons for each available region to filter by."""
+    # Get unique regions from participants
+    regions = sorted(list(set(p.get('region') for p in participants if p.get('region'))))
     
-    if not participants:
-        await callback.message.answer("No participants registered yet.")
+    if not regions:
+        await callback_query.answer("No regions available to filter by.")
         return
+
+    region_buttons = [[InlineKeyboardButton(text=region, callback_data=f"view_region_{region}")] for region in regions]
     
-    for i, participant in enumerate(participants, 1):
-        response = [
-            f"👤 Participant #{i}",
-            f"📅 Registered: {participant.get('registration_date', 'N/A')}",
-            f"👤 Name: {participant.get('full_name', 'N/A')}",
-            f"👤 Username: @{participant.get('username', 'No username')}",
-            f"🆔 Telegram ID: {participant.get('telegram_id', 'N/A')}",
-            f"📱 Phone: {participant.get('phone', 'N/A')}",
-            f"📊 English: {participant.get('english_level', 'N/A')}",
-            f"🎂 Age: {participant.get('age', 'N/A')}",
-            f"📍 Region: {participant.get('region', 'N/A')}",
-        ]
+    await callback_query.message.answer(
+        "Select a region to view participants:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=region_buttons)
+    )
+    await callback_query.answer()
+
+# Callback to view participants from a specific region
+@dp.callback_query(F.data.startswith("view_region_"))
+async def view_region_participants_callback(callback_query: types.CallbackQuery):
+    """Displays participants filtered by the selected region."""
+    region = callback_query.data.split("_")[-1]
+    
+    filtered_participants = [p for p in participants if p.get('region') == region]
+    
+    if not filtered_participants:
+        await callback_query.answer(f"No participants found for {region}.")
+        return
+
+    response = f"<b>Participants in {escape_html(region)}:</b>\n\n"
+    for p in filtered_participants:
+        response += (
+            f"<b>Name:</b> {escape_html(p.get('full_name', 'N/A'))}\n"
+            f"<b>Username:</b> @{escape_html(p.get('username', 'N/A'))}\n"
+            f"<b>Phone:</b> {escape_html(p.get('phone', 'N/A'))}\n"
+            f"<b>Team:</b> {escape_html(p.get('team_name', 'Individual'))}\n"
+            f"--------------------\n"
+        )
         
-        if 'team_name' in participant:
-            response.append(f"🏆 Team: {participant['team_name']}")
-            team_members = participant.get('team_members', [])
-            if team_members:
-                response.append("👥 Team Members:")
-                for j, member in enumerate(team_members, 1):
-                    response.append(f"  {j}. {member['name']} - {member['phone']}")
-        
-        response.append("--------------------")
-        await callback.message.answer("\n".join(response))
-    
-    await callback.answer()
+    await callback_query.message.answer(response, parse_mode='HTML')
+    await callback_query.answer()
 
-@dp.callback_query(F.data == "stats")
-async def show_stats(callback: types.CallbackQuery):
-    """Show registration statistics"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
+# Callback for exporting data
+@dp.callback_query(F.data == "export_data")
+async def export_data_callback(callback_query: types.CallbackQuery):
+    """Exports participant data to a text file."""
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer("Access denied.", show_alert=True)
         return
-    
-    total = len(participants)
-    teams = sum(1 for p in participants if 'team_name' in p)
-    solo = total - teams
-    
-    # Count by English level
-    levels = {}
-    for p in participants:
-        level = p.get('english_level', 'Not specified')
-        levels[level] = levels.get(level, 0) + 1
-    
-    # Count by age groups
-    age_groups = {"Under 18": 0, "18-25": 0, "26-35": 0, "Over 35": 0}
-    for p in participants:
-        age = p.get('age', 0)
-        if age < 18:
-            age_groups["Under 18"] += 1
-        elif age <= 25:
-            age_groups["18-25"] += 1
-        elif age <= 35:
-            age_groups["26-35"] += 1
-        else:
-            age_groups["Over 35"] += 1
-    
-    response = [
-        "📊 Registration Statistics",
-        f"👥 Total Participants: {total}",
-        f"🏆 Teams: {teams}",
-        f"👤 Solo Participants: {solo}",
-        "\n📚 English Levels:"
-    ]
-    
-    for level, count in levels.items():
-        response.append(f"• {level}: {count}")
-    
-    response.append("\n🎂 Age Groups:")
-    for group, count in age_groups.items():
-        response.append(f"• {group}: {count}")
 
-    # Count by region
-    regions = {}
-    for p in participants:
-        region = p.get('region', 'Not specified')
-        regions[region] = regions.get(region, 0) + 1
-    
-    response.append("\n📍 Regions:")
-    for region, count in regions.items():
-        response.append(f"• {region}: {count}")
-    
-    await callback.message.answer("\n".join(response))
-    await callback.answer()
-
-@dp.callback_query(F.data == "export")
-async def export_data(callback: types.CallbackQuery):
-    """Export participants data"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    
     if not participants:
-        await callback.message.answer("No data to export.")
+        await callback_query.answer("No data to export.")
         return
-    
-    # Create a formatted text export
+
     export_text = ["📋 PARTICIPANTS EXPORT", "=" * 30, ""]
-    
     for i, p in enumerate(participants, 1):
         export_text.append(f"#{i} - {p.get('full_name', 'N/A')}")
         export_text.append(f"Phone: {p.get('phone', 'N/A')}")
@@ -682,224 +573,141 @@ async def export_data(callback: types.CallbackQuery):
             if p.get('team_members'):
                 export_text.append("Members:")
                 for member in p['team_members']:
-                    export_text.append(f"  - {member['name']} ({member.get('phone', 'N/A')})")
+                    export_text.append(f"  - {member.get('name', 'N/A')}")
         else:
             export_text.append("Team: Solo")
-        
         export_text.append("-" * 20)
-    
-    # Send as text file
-    from io import StringIO
+
     file_content = "\n".join(export_text)
+    file_to_send = types.BufferedInputFile(file_content.encode('utf-8'), filename=f"participants_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
-    await callback.message.answer_document(
-        types.BufferedInputFile(
-            file_content.encode('utf-8'),
-            filename=f"participants_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        ),
-        caption="📋 Participants data export"
+    await callback_query.message.answer_document(file_to_send)
+    await callback_query.answer("Data exported successfully!")
+
+# Callback for confirming data clearance
+@dp.callback_query(F.data == "confirm_clear_all")
+async def confirm_clear_all_callback(callback_query: types.CallbackQuery):
+    """Asks for confirmation before clearing all data."""
+    confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Yes, Clear All", callback_data="clear_all_confirmed")],
+        [InlineKeyboardButton(text="❌ No, Cancel", callback_data="cancel_clear")]
+    ])
+    await callback_query.message.answer(
+        "⚠️ <b>Are you sure you want to clear all participant data?</b> This action cannot be undone.",
+        reply_markup=confirm_keyboard,
+        parse_mode='HTML'
     )
-    
-    await callback.answer("Data exported successfully!")
+    await callback_query.answer()
 
-@dp.callback_query(F.data == "show_region_filter")
-async def show_region_filter(callback: types.CallbackQuery):
-    """Shows region filter options."""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-
-    regions = ["Tashkent", "Andijan", "Fergana", "Khorazm"]
-    keyboard = [
-        [types.InlineKeyboardButton(text=region, callback_data=f"filter_region_{region}")] for region in regions
-    ]
-    keyboard.append([types.InlineKeyboardButton(text="⬅️ Back to Admin Panel", callback_data="back_to_admin")])
-    
-    reply_markup = types.InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(
-        "📍 Please select a region to filter by:",
-        reply_markup=reply_markup
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("filter_region_"))
-async def view_participants_by_region(callback: types.CallbackQuery):
-    """Shows participants filtered by a specific region."""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-
-    region = callback.data.split("_", 2)[2]
-    
-    filtered_participants = [p for p in participants if p.get('region') == region]
-
-    if not filtered_participants:
-        await callback.message.answer(f"No participants registered from {region}.")
-        await callback.answer()
-        return
-
-    await callback.message.delete() # Delete the filter menu
-    await callback.message.answer(f"👥 Participants from {region}:")
-
-    for i, participant in enumerate(filtered_participants, 1):
-        response = [
-            f"👤 Participant #{i}",
-            f"📅 Registered: {participant.get('registration_date', 'N/A')}",
-            f"👤 Name: {participant.get('full_name', 'N/A')}",
-            f"👤 Username: @{participant.get('username', 'No username')}",
-            f"🆔 Telegram ID: {participant.get('telegram_id', 'N/A')}",
-            f"📱 Phone: {participant.get('phone', 'N/A')}",
-            f"📊 English: {participant.get('english_level', 'N/A')}",
-            f"🎂 Age: {participant.get('age', 'N/A')}",
-        ]
-        
-        if 'team_name' in participant:
-            response.append(f"🏆 Team: {participant['team_name']}")
-            team_members = participant.get('team_members', [])
-            if team_members:
-                response.append("👥 Team Members:")
-                for j, member in enumerate(team_members, 1):
-                    response.append(f"  {j}. {member['name']} - {member['phone']}")
-        
-        response.append("--------------------")
-        await callback.message.answer("\n".join(response))
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "back_to_admin")
-async def back_to_admin_panel(callback: types.CallbackQuery):
-    """Returns to the main admin panel."""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-
-    keyboard = [
-        [
-            types.InlineKeyboardButton(text="👥 View All Participants", callback_data="view_all"),
-            types.InlineKeyboardButton(text="📊 Statistics", callback_data="stats")
-        ],
-        [
-            types.InlineKeyboardButton(text="📋 Export Data", callback_data="export"),
-            types.InlineKeyboardButton(text="🔄 Reload Data", callback_data="reload")
-        ],
-        [
-            types.InlineKeyboardButton(text="📍 Filter by Region", callback_data="show_region_filter")
-        ]
-    ]
-    reply_markup = types.InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(
-        "👨‍💼 Admin Panel",
-        reply_markup=reply_markup
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "reload")
-async def reload_data(callback: types.CallbackQuery):
-    """Reload participants data from file"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    
-    load_participants()
-    await callback.message.answer(f"🔄 Data reloaded! Found {len(participants)} participants.")
-    await callback.answer()
-
-# Test channel connection command
-@dp.message(Command("test_channel"))
-async def test_channel(message: types.Message):
-    """Test channel connection (admin only)"""
-    if not is_admin(message.from_user.id):
-        await message.answer("🚫 Access denied.")
-        return
-    
-    test_data = {
-        'full_name': 'Test User',
-        'username': 'testuser',
-        'telegram_id': 12345,
-        'phone': '+1234567890',
-        'english_level': 'Intermediate',
-        'age': 25,
-        'registration_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    await message.answer("🧪 Testing channel notification...")
-    await notify_channel(test_data)
-    await message.answer("✅ Test notification sent! Check the channel and logs.")
-
-def save_participants():
-    """Save participants to a JSON file"""
-    try:
-        with open('participants.json', 'w', encoding='utf-8') as f:
-            json.dump(participants, f, ensure_ascii=False, indent=2)
-        logger.info(f"Saved {len(participants)} participants to file")
-    except Exception as e:
-        logger.error(f"Error saving participants: {e}")
-
-def load_participants():
-    """Load participants from JSON file"""
+# Callback for final data clearance
+@dp.callback_query(F.data == "clear_all_confirmed")
+async def clear_all_confirmed_callback(callback_query: types.CallbackQuery):
+    """Clears all participant data after confirmation."""
     global participants
-    try:
-        with open('participants.json', 'r', encoding='utf-8') as f:
-            participants = json.load(f)
-        logger.info(f"Loaded {len(participants)} participants from file")
-    except FileNotFoundError:
-        participants = []
-        logger.info("No existing participants file found, starting fresh")
-    except Exception as e:
-        logger.error(f"Error loading participants: {e}")
-        participants = []
+    participants.clear()
+    save_participants()  # Overwrite with empty list
+    await callback_query.message.edit_text("All participant data has been cleared.")
+    await callback_query.answer("Data cleared.")
 
-# Fallback handler for any other messages
-@dp.message()
-async def handle_other_messages(message: types.Message, state: FSMContext):
-    """Handle messages that don't match any other handlers."""
-    # If user is in a state, do nothing to avoid interrupting a form
-    if await state.get_state() is not None:
-        return
+# Callback to cancel data clearance
+@dp.callback_query(F.data == "cancel_clear")
+async def cancel_clear_callback(callback_query: types.CallbackQuery):
+    """Cancels the data clearance action."""
+    await callback_query.message.edit_text("Data clearance cancelled.")
+    await callback_query.answer()
 
+
+async def finalize_registration(message: types.Message, participant_data: dict):
+    """Finalizes the registration process."""
+    # Add registration timestamp and user info
+    participant_data['registration_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    participant_data['telegram_id'] = message.from_user.id
+    participant_data['username'] = message.from_user.username or "No username"
+    participant_data['first_name'] = message.from_user.first_name or ""
+    participant_data['last_name'] = message.from_user.last_name or ""
+    
+    # Store the participant
+    participants.append(participant_data)
+    
+    # Save to file (in a real app, use a database)
+    save_participants()
+    
+    # Send notification to channel
+    await notify_channel(participant_data)
+    
+    # Send notification to admin
+    await notify_admin(participant_data)
+    
+    # Create response message
+    response = [
+        "✅ Registration Complete! ✅",
+        "\n📋 Your Details:",
+        f"👤 Name: {participant_data.get('full_name', 'N/A')}",
+        f"📱 Phone: {participant_data['phone']}",
+        f"📊 English Level: {participant_data['english_level']}",
+        f"🎂 Age: {participant_data['age']}",
+        f"📍 Region: {participant_data['region']}",
+    ]
+    
+    if 'team_name' in participant_data:
+        response.append(f"\n🏆 Team: {participant_data['team_name']}")
+        
+        # Add team members if any
+        team_members = participant_data.get('team_members', [])
+        if team_members:
+            response.append("\n👥 Team Members:")
+            for i, member in enumerate(team_members, 1):
+                response.append(f"{i}. {member.get('name', 'N/A')}")
+    
+    # Send confirmation
     await message.answer(
-        "Please use the menu buttons to navigate.",
+        "\n".join(response),
         reply_markup=main_menu_keyboard
     )
 
-# Main function
+
 async def scheduled_clear_job():
-    """Scheduled job to clear all data and notify admins."""
-    clear_all_data()
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, "🤖 Weekly registration data has been automatically cleared.")
-        except Exception as e:
-            logger.error(f"Failed to send weekly clear notification to admin {admin_id}: {e}")
+    # This is a placeholder. Implement job logic if needed.
+    logger.info("Scheduled job running...")
+
+@dp.message()
+async def handle_other_messages(message: types.Message):
+    """Handle all other messages for unregistered users or unknown commands."""
+    if message.text and message.text.startswith('/'):
+        await message.answer(
+            "❓ I don't understand that command.\n\n"
+            "Available commands:\n"
+            "• /start - Begin registration\n"
+            "• /admin - Admin panel (admins only)"
+        )
+    else:
+        await message.answer(
+            "👋 Hi! You need to register first.\n"
+            "Send /start to begin registration.",
+            reply_markup=main_menu_keyboard
+        )
 
 async def main():
-    logger.info("Starting registration bot...")
+    """Main function to start the bot."""
     load_participants()
 
-    # Initialize scheduler
     scheduler = AsyncIOScheduler(timezone=pytz.utc)
-    # Schedule job to run every Sunday at 00:00 server time
-    scheduler.add_job(scheduled_clear_job, 'cron', day_of_week='sun', hour=0, minute=0)
+    scheduler.add_job(save_participants, 'interval', minutes=15)
+    # scheduler.add_job(scheduled_clear_job, 'cron', day_of_week='sun', hour=0, minute=0)
     scheduler.start()
 
+    logger.info("Starting bot...")
     try:
         await dp.start_polling(bot, skip_pending=True)
-    except Exception as e:
-        logger.error(f"Error during polling: {e}")
-        raise
     finally:
         scheduler.shutdown()
         await bot.session.close()
 
 if __name__ == '__main__':
-    print("--- Attempting to start bot... ---")
+    import asyncio
     try:
-        import asyncio
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        raise
+        logger.critical(f"Bot failed to start: {e}", exc_info=True)
